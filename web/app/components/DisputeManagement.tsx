@@ -180,7 +180,7 @@ export default function DisputeManagement() {
           <div className="space-y-4">
             {activeDisputes.map((dispute) => {
               const userVote = getUserVote(dispute.id);
-              const canVote = !hasUserVoted(dispute.id) && dispute.votingDeadline > Date.now();
+              const canVote = !hasUserVoted(dispute.id) && dispute.votingDeadline > now;
               
               return (
                 <div key={dispute.id} className="glass p-6 rounded-xl">
