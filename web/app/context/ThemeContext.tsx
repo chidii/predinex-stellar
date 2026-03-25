@@ -16,15 +16,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>('light');
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
-    const stored = localStorage.getItem('theme') as Theme | null;
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initialTheme = stored || (prefersDark ? 'dark' : 'light');
-    setThemeState(initialTheme);
-    applyTheme(initialTheme);
-  }, []);
-
   const applyTheme = (newTheme: Theme) => {
     const root = document.documentElement;
     if (newTheme === 'dark') {
@@ -34,6 +25,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
     localStorage.setItem('theme', newTheme);
   };
+
+  useEffect(() => {
+    setMounted(true);
+    const stored = localStorage.getItem('theme') as Theme | null;
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const initialTheme = stored || (prefersDark ? 'dark' : 'light');
+    setThemeState(initialTheme);
+    applyTheme(initialTheme);
+  }, []);
 
   const setTheme = (newTheme: Theme) => {
     setThemeState(newTheme);
@@ -63,12 +63,3 @@ export function useTheme() {
   }
   return context;
 }
-// Theme context enhancement 2
-// Theme context enhancement 3
-// Theme context enhancement 4
-// Theme context enhancement 5
-// Theme context enhancement 6
-// Theme context enhancement 7
-// Theme context enhancement 8
-// Theme context enhancement 9
-// Theme context enhancement 10
