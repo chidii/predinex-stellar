@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { renderWithProviders } from '../helpers/renderWithProviders';
 import AuthGuard from '../../app/components/AuthGuard';
 import * as StacksProvider from '../../app/components/StacksProvider';
 
@@ -20,7 +21,7 @@ describe('AuthGuard', () => {
       signOut: vi.fn(),
     });
 
-    render(
+    renderWithProviders(
       <AuthGuard>
         <div>Protected Content</div>
       </AuthGuard>
@@ -36,7 +37,7 @@ describe('AuthGuard', () => {
       signOut: vi.fn(),
     });
 
-    render(
+    renderWithProviders(
       <AuthGuard>
         <div>Protected Content</div>
       </AuthGuard>
@@ -54,7 +55,7 @@ describe('AuthGuard', () => {
       signOut: vi.fn(),
     });
 
-    render(
+    renderWithProviders(
       <AuthGuard fallback={<div>Custom Fallback</div>}>
         <div>Protected Content</div>
       </AuthGuard>
@@ -74,7 +75,7 @@ describe('AuthGuard', () => {
 
     const userEvent = (await import('@testing-library/user-event')).default.setup();
 
-    render(<AuthGuard><div>Content</div></AuthGuard>);
+    renderWithProviders(<AuthGuard><div>Content</div></AuthGuard>);
 
     const button = screen.getByText('Connect Wallet');
     await userEvent.click(button);

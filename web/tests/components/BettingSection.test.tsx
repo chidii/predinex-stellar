@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import BettingSection from '../../app/components/BettingSection';
 import * as StacksProvider from '../../app/components/StacksProvider';
@@ -49,10 +49,6 @@ vi.mock('../../providers/ToastProvider', () => ({
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-/** Minimal wrapper that satisfies all context requirements for BettingSection */
-function renderWithProviders(ui: React.ReactElement) {
-  return render(ui);
-}
 
 const mockPool = {
   id: 0,
