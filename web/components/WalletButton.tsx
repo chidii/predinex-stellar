@@ -4,11 +4,8 @@ import { useWallet } from '../app/components/WalletAdapterProvider';
 import { Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useToast } from '../providers/ToastProvider';
-import {
-  classifyConnectivityIssue,
-  getConnectivityMessage,
-  withTimeout,
-} from '../app/lib/network-errors';
+import { showToastPayload, connectivityErrorToast } from '../lib/toast-messages';
+import { classifyConnectivityIssue, withTimeout } from '../app/lib/network-errors';
 
 interface WalletButtonProps {
   className?: string;
@@ -42,7 +39,7 @@ export default function WalletButton({ className, label = 'Connect Wallet' }: Wa
       await withTimeout(Promise.resolve(connect()), 15000, 'Wallet connection timeout');
     } catch (error) {
       const issue = classifyConnectivityIssue(error);
-      showToast(getConnectivityMessage(issue, 'Connecting wallet'), 'error');
+      showToastPayload(showToast, connectivityErrorToast(issue, 'Connecting wallet'));
     }
   };
 

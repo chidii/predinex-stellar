@@ -6,6 +6,7 @@ import BettingSection from '../../app/components/BettingSection';
 import * as WalletAdapterProvider from '../../app/components/WalletAdapterProvider';
 import * as StacksConnect from '@stacks/connect';
 import { useToast } from '../../providers/ToastProvider';
+import { toastMessages } from '../../lib/toast-messages';
 import { renderWithProviders } from '../helpers/renderWithProviders';
 
 // Mock runtime-config so getRuntimeConfig() doesn't throw in tests
@@ -116,8 +117,8 @@ describe('BettingSection', () => {
     await user.click(betButton);
 
     expect(showToast).toHaveBeenCalledWith(
-      'Please enter a valid bet amount greater than 0.',
-      'error'
+      toastMessages.bet.invalidAmount.message,
+      toastMessages.bet.invalidAmount.type
     );
     expect(vi.mocked(StacksConnect.openContractCall)).not.toHaveBeenCalled();
   });
@@ -134,7 +135,8 @@ describe('BettingSection', () => {
     const betButton = screen.getByText(/Bet on Outcome A/i);
     await user.click(betButton);
 
-    expect(showToast).toHaveBeenCalledWith('Minimum bet amount is 0.1 STX.', 'error');
+    const minBet = toastMessages.bet.minBet();
+    expect(showToast).toHaveBeenCalledWith(minBet.message, minBet.type);
     expect(vi.mocked(StacksConnect.openContractCall)).not.toHaveBeenCalled();
   });
 
