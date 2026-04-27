@@ -2553,3 +2553,142 @@ fn l4_successful_claim_reconciles_treasury_and_balances() {
         "remaining contract balance must equal the unclaimed treasury fee"
     );
 }
+
+// ── #164 get_withdrawable_treasury ───────────────────────────────────────────
+
+/// Shared setup for treasury preview tests.
+fn setup_treasury_preview_env(
+    env: &Env,
+) -> (
+    PredinexContractClient<'_>,
+    token::StellarAssetClient<'_>,
+    Address, // treasury_recipient (also token_admin)
+    Address, // contract_id
+    Address, // creator
+) {
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(env, &contract_id);
+
+    let treasury_recipient = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(treasury_recipient.clone());
+    let token_admin_client = token::StellarAssetClient::new(env, &token_id.address());
+
+    client.initialize(&token_id.address(), &treasury_recipient);
+
+    let creator = Address::generate(env);
+    (
+        client,
+        token_admin_client,
+        treasury_recipient,
+        contract_id,
+        creator,
+    )
+}
+
+/// Settle a pool and return the fee that accrued to the treasury.
+fn accrue_fee(
+    env: &Env,
+    client: &PredinexContractClient<'_>,
+    token_admin: &token::StellarAssetClient<'_>,
+    creator: &Address,
+    amount_a: i128,
+    amount_b: i128,
+    base_ts: u64,
+) -> i128 {
+    let user_a = Address::generate(env);
+    let user_b = Address::generate(env);
+    token_admin.mint(&user_a, &amount_a);
+    token_admin.mint(&user_b, &amount_b);
+
+    env.ledger().with_mut(|l| l.timestamp = base_ts);
+    let pool_id = client.create_pool(
+        creator,
+        &String::from_str(env, "Fee Pool"),
+        &String::from_str(env, ""),
+        &String::from_str(env, "Yes"),
+        &String::from_str(env, "No"),
+        &3600u64,
+    );
+    client.place_bet(&user_a, &pool_id, &0, &amount_a);
+    client.place_bet(&user_b, &pool_id, &1, &amount_b);
+    env.ledger().with_mut(|l| l.timestamp = base_ts + 3601);
+    client.settle_pool(creator, &pool_id, &0);
+    client.claim_winnings(&user_a, &pool_id);
+
+    ((amount_a + amount_b) * 2) / 100
+}
+
+/// AC: Read the treasury preview before and after fee accrual and verify the
+/// value tracks the contract state.
+#[test]
+fn test_withdrawable_treasury_tracks_fee_accrual() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, token_admin, treasury_recipient, _contract_id, creator) =
+        setup_treasury_preview_env(&env);
+
+    // Before any settlement the withdrawable amount must be zero.
+    assert_eq!(
+        client.get_withdrawable_treasury(),
+        0,
+        "withdrawable must be 0 before any fee accrues"
+    );
+
+    // Settle a pool and claim winnings so the fee lands in the treasury.
+    let fee1 = accrue_fee(&env, &client, &token_admin, &creator, 300, 200, 0);
+    assert_eq!(
+        client.get_withdrawable_treasury(),
+        fee1,
+        "withdrawable must equal the accrued fee after first settlement"
+    );
+
+    // Settle a second pool; withdrawable must accumulate.
+    let fee2 = accrue_fee(&env, &client, &token_admin, &creator, 500, 500, 10_000);
+    assert_eq!(
+        client.get_withdrawable_treasury(),
+        fee1 + fee2,
+        "withdrawable must accumulate across multiple settlements"
+    );
+
+    // Partial withdrawal reduces the withdrawable amount by exactly the withdrawn sum.
+    let partial = fee1;
+    client.withdraw_treasury(&treasury_recipient, &partial);
+    assert_eq!(
+        client.get_withdrawable_treasury(),
+        fee2,
+        "withdrawable must decrease by the withdrawn amount"
+    );
+}
+
+/// AC: Compare the preview value to a successful full-balance withdrawal and
+/// verify they match.
+#[test]
+fn test_withdrawable_treasury_matches_full_withdrawal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, token_admin, treasury_recipient, _contract_id, creator) =
+        setup_treasury_preview_env(&env);
+
+    let fee = accrue_fee(&env, &client, &token_admin, &creator, 400, 600, 0);
+
+    // Preview must equal the full treasury balance.
+    let preview = client.get_withdrawable_treasury();
+    assert_eq!(preview, fee, "preview must equal accrued fee");
+
+    // A withdrawal of exactly the preview amount must succeed (no panic).
+    client.withdraw_treasury(&treasury_recipient, &preview);
+
+    // After a full withdrawal both the balance and the preview must be zero.
+    assert_eq!(
+        client.get_withdrawable_treasury(),
+        0,
+        "withdrawable must be 0 after full withdrawal"
+    );
+    assert_eq!(
+        client.get_treasury_balance(),
+        0,
+        "treasury balance must be 0 after full withdrawal"
+    );
+}
