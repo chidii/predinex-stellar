@@ -352,8 +352,12 @@ impl PredinexContract {
 
         let pool_id = Self::get_pool_counter(&env);
 
+        if duration == 0 || duration > MAX_POOL_DURATION {
+            panic!(format!("Duration must be between 1 and {} seconds", MAX_POOL_DURATION));
+        }
+
         let created_at = env.ledger().timestamp();
-        let expiry = created_at + duration;
+        let expiry = created_at.checked_add(duration).expect("Expiry overflow");
 
         let pool = Pool {
             creator: creator.clone(),
@@ -435,9 +439,9 @@ impl PredinexContract {
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         if outcome == 0 {
-            pool.total_a += amount;
+            pool.total_a = pool.total_a.checked_add(amount).expect("Pool total overflow");
         } else {
-            pool.total_b += amount;
+            pool.total_b = pool.total_b.checked_add(amount).expect("Pool total overflow");
         }
 
         let mut user_bet = env
@@ -466,11 +470,11 @@ impl PredinexContract {
         );
 
         if outcome == 0 {
-            user_bet.amount_a += amount;
+            user_bet.amount_a = user_bet.amount_a.checked_add(amount).expect("User bet overflow");
         } else {
-            user_bet.amount_b += amount;
+            user_bet.amount_b = user_bet.amount_b.checked_add(amount).expect("User bet overflow");
         }
-        user_bet.total_bet += amount;
+        user_bet.total_bet = user_bet.total_bet.checked_add(amount).expect("User bet overflow");
 
         env.storage()
             .persistent()
@@ -790,9 +794,12 @@ impl PredinexContract {
             .persistent()
             .get(&DataKey::Treasury)
             .unwrap_or(0);
+        let updated_treasury = current_treasury
+            .checked_add(fee)
+            .expect("Treasury total overflow");
         env.storage()
             .persistent()
-            .set(&DataKey::Treasury, &(current_treasury + fee));
+            .set(&DataKey::Treasury, &updated_treasury);
 
         // Step 4: remove the bet record to prevent duplicate claims.
         env.storage()
