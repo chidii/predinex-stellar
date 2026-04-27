@@ -804,7 +804,12 @@ impl PredinexContract {
             .publish((Symbol::new(&env, "fee_collected"), pool_id), fee);
         env.events().publish(
             (Symbol::new(&env, "claim_winnings"), pool_id, user),
-            winnings,
+            ClaimEvent {
+                amount: winnings,
+                fee_amount: fee,
+                winning_outcome,
+                total_pool_size: total_pool_balance,
+            },
         );
 
         winnings
