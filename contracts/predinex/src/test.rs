@@ -1185,8 +1185,7 @@ fn f1_delegated_settler_can_settle_after_expiry() {
     t.client.settle_pool(&settler, &pool_id, &0u32);
 
     let pool = t.client.get_pool(&pool_id).expect("pool must exist");
-    assert!(pool.settled, "pool must be settled");
-    assert_eq!(pool.winning_outcome, Some(0u32));
+    assert_eq!(pool.status, PoolStatus::Settled(0), "pool must be settled");
 }
 
 /// F2: Unauthorized address cannot settle even after expiry.
@@ -1229,8 +1228,7 @@ fn f4_creator_can_settle_without_delegated_settler() {
     t.client.settle_pool(&t.admin, &pool_id, &1u32);
 
     let pool = t.client.get_pool(&pool_id).expect("pool must exist");
-    assert!(pool.settled);
-    assert_eq!(pool.winning_outcome, Some(1u32));
+    assert_eq!(pool.status, PoolStatus::Settled(1));
 }
 
 /// F5: get_delegated_settler returns the assigned settler.
