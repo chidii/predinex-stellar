@@ -68,8 +68,11 @@ export function validateDuration(duration: number): { valid: boolean; error?: st
   if (!duration || duration <= 0) {
     return { valid: false, error: 'Duration must be greater than 0' };
   }
-  if (duration < 10) {
-    return { valid: false, error: 'Duration must be at least 10 blocks' };
+  if (duration < MIN_POOL_DURATION_SECS) {
+    return {
+      valid: false,
+      error: `Duration must be at least ${MIN_POOL_DURATION_SECS} seconds (5 minutes)`,
+    };
   }
   if (duration > MAX_POOL_DURATION_SECONDS) {
     return {

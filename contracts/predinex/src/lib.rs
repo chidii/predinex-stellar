@@ -376,6 +376,15 @@ impl PredinexContract {
     ) -> u32 {
         creator.require_auth();
 
+        // #151 — Reject pools below the minimum duration before any state
+        // writes or fee transfers, so a rejection leaves the contract
+        // untouched (no creation fee charged, no pool counter advanced).
+        // The error string is part of the contract's stable interface; see
+        // `web/docs/POOL_DURATION.md` for the rationale and frontend guidance.
+        if duration < MIN_POOL_DURATION_SECS {
+            panic!("Duration below minimum");
+        }
+
         if Self::normalize_outcome(&env, &outcome_a) == Self::normalize_outcome(&env, &outcome_b) {
             panic!("Duplicate outcome labels");
         }
