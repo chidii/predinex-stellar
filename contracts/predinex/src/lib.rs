@@ -2,6 +2,7 @@
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
 
 mod test;
+mod protocol_fee_tests;
 
 #[derive(Clone)]
 #[contracttype]
@@ -17,6 +18,9 @@ pub enum DataKey {
     /// #179 — per-pool creation fee in stroops. Set by the admin via
     /// `set_creation_fee`; defaults to 0 (no fee) when absent.
     CreationFee,
+    /// #167 — protocol fee in basis points. Set by the treasury recipient via
+    /// `set_protocol_fee`; defaults to 200 (2%) when absent.
+    ProtocolFee,
 }
 
 // #189 — TTL bump policy for persistent storage entries.
@@ -31,6 +35,14 @@ pub enum DataKey {
 const LEDGERS_PER_DAY: u32 = 17_280;
 const POOL_BUMP_TARGET: u32 = LEDGERS_PER_DAY * 30; // extend to 30 days
 const POOL_BUMP_THRESHOLD: u32 = LEDGERS_PER_DAY * 25; // trigger bump when < 25 days remain
+
+/// #167 — Protocol fee bounds in basis points.
+/// Minimum fee: 0 (0%) — no fee floor, allows fee-free operation.
+/// Maximum fee: 1000 (10%) — protects users from excessive fees.
+/// Default fee: 200 (2%) — matches the original hard-coded value.
+const PROTOCOL_FEE_MIN_BPS: u32 = 0;
+const PROTOCOL_FEE_MAX_BPS: u32 = 1000;
+const PROTOCOL_FEE_DEFAULT_BPS: u32 = 200;
 
 /// Explicit lifecycle status for a prediction pool.
 ///
@@ -153,6 +165,27 @@ pub struct BetEvent {
     pub total_bet: i128,
 }
 
+/// #169 — Event payload emitted by `create_pool`.
+///
+/// Fields
+/// ------\n/// - `creator`        – address that created the pool
+/// - `expiry`         – unix timestamp when the pool expires
+/// - `title`          – short market title
+/// - `outcome_a_name` – label for outcome A
+/// - `outcome_b_name` – label for outcome B
+///
+/// This payload allows indexers to populate a lightweight market list entry
+/// without performing follow-up reads for every new pool.
+#[derive(Clone)]
+#[contracttype]
+pub struct CreatePoolEvent {
+    pub creator: Address,
+    pub expiry: u64,
+    pub title: String,
+    pub outcome_a_name: String,
+    pub outcome_b_name: String,
+}
+
 #[contract]
 pub struct PredinexContract;
 
@@ -195,6 +228,56 @@ impl PredinexContract {
             .persistent()
             .get::<_, i128>(&DataKey::CreationFee)
             .unwrap_or(0)
+    }
+
+    /// #167 — Set the protocol fee in basis points.
+    ///
+    /// Only the treasury recipient may call this. The fee must be within
+    /// [PROTOCOL_FEE_MIN_BPS, PROTOCOL_FEE_MAX_BPS] (0–1000 basis points, i.e., 0–10%).
+    /// The fee applies to future settlements and claims; existing settled pools
+    /// are not affected.
+    ///
+    /// # Arguments
+    /// * `caller` – must be the current treasury recipient
+    /// * `fee_bps` – new fee in basis points (1 bp = 0.01%)
+    ///
+    /// # Panics
+    /// * "Unauthorized" – if caller is not the treasury recipient
+    /// * "Fee out of bounds" – if fee_bps is outside [0, 1000]
+    pub fn set_protocol_fee(env: Env, caller: Address, fee_bps: u32) {
+        caller.require_auth();
+        let treasury_recipient: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryRecipient)
+            .expect("Not initialized");
+        if caller != treasury_recipient {
+            panic!("Unauthorized");
+        }
+        if fee_bps < PROTOCOL_FEE_MIN_BPS || fee_bps > PROTOCOL_FEE_MAX_BPS {
+            panic!("Fee out of bounds");
+        }
+        env.storage().persistent().set(&DataKey::ProtocolFee, &fee_bps);
+
+        env.events().publish(
+            (Symbol::new(&env, "protocol_fee_set"),),
+            (caller, fee_bps),
+        );
+    }
+
+    /// #166 — Return the current protocol fee in basis points.
+    ///
+    /// The returned value is the canonical source of truth for fee display
+    /// in frontends and analytics. Use `get_protocol_fee` to preview fees
+    /// before placing bets or claiming winnings.
+    ///
+    /// # Returns
+    /// The protocol fee in basis points (default: 200 = 2%).
+    pub fn get_protocol_fee(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::ProtocolFee)
+            .unwrap_or(PROTOCOL_FEE_DEFAULT_BPS)
     }
 
     /// Normalize a Soroban `String` to a comparable form by converting to
@@ -273,10 +356,10 @@ impl PredinexContract {
 
         let pool = Pool {
             creator: creator.clone(),
-            title,
+            title: title.clone(),
             description,
-            outcome_a_name: outcome_a,
-            outcome_b_name: outcome_b,
+            outcome_a_name: outcome_a.clone(),
+            outcome_b_name: outcome_b.clone(),
             total_a: 0,
             total_b: 0,
             participant_count: 0,
@@ -301,9 +384,16 @@ impl PredinexContract {
             .persistent()
             .set(&DataKey::PoolCounter, &(pool_id + 1));
 
+        // #169 — emit enriched create_pool event with expiry and metadata summary
         env.events().publish(
             (Symbol::new(&env, "create_pool"), pool_id),
-            (creator, Symbol::new(&env, "Open")),
+            CreatePoolEvent {
+                creator: creator.clone(),
+                expiry,
+                title,
+                outcome_a_name: outcome_a,
+                outcome_b_name: outcome_b,
+            },
         );
 
         pool_id
@@ -509,13 +599,15 @@ impl PredinexContract {
         pool.winning_outcome = Some(winning_outcome);
 
         // #171 — compute totals for the enriched settlement event.
+        // #167 — use configurable protocol fee instead of hard-coded 2%.
         let winning_side_total = if winning_outcome == 0 {
             pool.total_a
         } else {
             pool.total_b
         };
         let total_pool_volume = pool.total_a + pool.total_b;
-        let fee_amount = (total_pool_volume * 2) / 100;
+        let fee_bps = Self::get_protocol_fee(env.clone()) as i128;
+        let fee_amount = (total_pool_volume * fee_bps) / 10000;
 
         env.storage()
             .persistent()
@@ -675,7 +767,8 @@ impl PredinexContract {
         };
         let total_pool_balance = pool.total_a + pool.total_b;
 
-        let fee = (total_pool_balance * 2) / 100;
+        let fee_bps = Self::get_protocol_fee(env.clone()) as i128;
+        let fee = (total_pool_balance * fee_bps) / 10000;
         let net_pool_balance = total_pool_balance - fee;
 
         let winnings = (user_winning_bet * net_pool_balance) / pool_winning_total;
