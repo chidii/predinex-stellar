@@ -59,7 +59,7 @@ function DashboardContent() {
     error: activityError,
     refresh: refreshActivity,
   } = useUserActivity(stxAddress || undefined, 5);
-  const { activeBets, isLoading: betsLoading, refresh: refreshBets } = useActiveBets(stxAddress);
+  const { activeBets, isLoading: betsLoading, refresh: refreshBets } = useActiveBets(stxAddress || undefined);
 
   return (
     <main className="min-h-screen bg-background">
