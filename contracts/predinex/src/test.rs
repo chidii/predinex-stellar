@@ -2928,3 +2928,55 @@ fn test_metadata_whitespace() {
     );
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Issue #193: Contract configuration read method tests
+//
+// The contract exposes a single get_config method for frontend bootstrapping.
+// ============================================================================
+
+/// I1: get_config returns all configuration values after initialization.
+#[test]
+fn i1_get_config_returns_all_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+
+    client.initialize(&token_id.address(), &token_admin);
+
+    let config = client.get_config();
+
+    assert_eq!(config.token, token_id.address());
+    assert_eq!(config.treasury_recipient, token_admin);
+    assert_eq!(config.creation_fee, 0i128);
+    assert_eq!(config.protocol_fee_bps, 200u32);
+    assert_eq!(config.event_schema_version, Symbol::new(&env, "v1"));
+}
+
+/// I2: get_config reflects updated values after configuration changes.
+#[test]
+fn i2_get_config_reflects_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+
+    client.initialize(&token_id.address(), &token_admin);
+
+    client.set_creation_fee(&token_admin, &5000i128);
+    client.set_protocol_fee(&token_admin, &500u32);
+
+    let config = client.get_config();
+
+    assert_eq!(config.creation_fee, 5000i128);
+    assert_eq!(config.protocol_fee_bps, 500u32);
+}

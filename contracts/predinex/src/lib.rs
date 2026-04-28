@@ -241,6 +241,25 @@ pub struct ClaimEvent {
     pub total_pool_size: i128,
 }
 
+/// #193 — Global contract configuration returned by `get_config`.
+///
+/// Provides a single view of all contract configuration values for
+/// frontend bootstrapping and diagnostics, replacing multiple reads.
+#[derive(Clone)]
+#[contracttype]
+pub struct ContractConfig {
+    /// The token address used for bets and settlements.
+    pub token: Address,
+    /// The address authorized to receive protocol fees and rotate.
+    pub treasury_recipient: Address,
+    /// Per-pool creation fee in stroops (0 if not set).
+    pub creation_fee: i128,
+    /// Protocol fee in basis points (default: 200 = 2%).
+    pub protocol_fee_bps: u32,
+    /// Event schema version for indexer compatibility.
+    pub event_schema_version: Symbol,
+}
+
 /// Event payload emitted by `place_bet`.
 ///
 /// Fields
@@ -409,6 +428,46 @@ impl PredinexContract {
             .persistent()
             .get::<_, u32>(&DataKey::ProtocolFee)
             .unwrap_or(PROTOCOL_FEE_DEFAULT_BPS)
+    }
+
+    /// #193 — Return the complete contract configuration in a single call.
+    ///
+    /// Provides all configuration values needed for frontend bootstrapping
+    /// and diagnostics. This replaces multiple individual reads and provides
+    /// a stable interface for consumers.
+    ///
+    /// # Returns
+    /// `ContractConfig` with token address, treasury recipient, creation fee,
+    /// protocol fee, and event schema version.
+    pub fn get_config(env: Env) -> ContractConfig {
+        let token: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+        let treasury_recipient: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryRecipient)
+            .expect("Not initialized");
+        let creation_fee: i128 = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::CreationFee)
+            .unwrap_or(0);
+        let protocol_fee_bps: u32 = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::ProtocolFee)
+            .unwrap_or(PROTOCOL_FEE_DEFAULT_BPS);
+
+        ContractConfig {
+            token,
+            treasury_recipient,
+            creation_fee,
+            protocol_fee_bps,
+            event_schema_version: Symbol::new(&env, EVENT_SCHEMA_VERSION),
+        }
     }
 
     /// Normalize a Soroban `String` to a comparable form by converting to
