@@ -207,6 +207,40 @@ pub enum ClaimPreview {
     Claimable(i128),
 }
 
+/// #158 — Per-pool payout tracking state for reconciliation.
+///
+/// Tracks cumulative claimed winning stake and paid out amounts
+/// across multiple claims to enable fee-on-first-claim and dust-sweep-on-last.
+#[derive(Clone, Default, PartialEq)]
+#[contracttype]
+pub struct PoolPayoutState {
+    /// Whether the protocol fee has been credited to treasury for this pool.
+    /// The fee is credited only once, on the first winner claim.
+    pub fee_credited: bool,
+    /// Cumulative winning stake that has been claimed (in terms of the winner's
+    /// contribution to the winning side, not the payout amount).
+    pub claimed_winning_stake: i128,
+    /// Total payout amount that has been distributed to winners.
+    pub paid_out: i128,
+}
+
+/// Event payload emitted by `claim_winnings`.
+///
+/// Fields
+/// ------
+/// - `amount`        – tokens transferred to the claimant
+/// - `fee_amount`    – protocol fee credited to treasury (only on first claim)
+/// - `winning_outcome` – which outcome was declared the winner (0 or 1)
+/// - `total_pool_size` – total tokens in the pool at settlement time
+#[derive(Clone)]
+#[contracttype]
+pub struct ClaimEvent {
+    pub amount: i128,
+    pub fee_amount: i128,
+    pub winning_outcome: u32,
+    pub total_pool_size: i128,
+}
+
 /// Event payload emitted by `place_bet`.
 ///
 /// Fields
