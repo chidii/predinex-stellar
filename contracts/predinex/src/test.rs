@@ -2910,3 +2910,68 @@ fn test_create_pool_max_lengths_accepted() {
     assert_eq!(pool.description.len(), 1000);
     assert_eq!(pool.outcome_a_name.len(), 50);
 }
+
+#[test]
+#[should_panic]
+fn test_circuit_breaker_rejects_bets_above_max_pool_size() {
+    let t = setup();
+    t.client
+        .set_circuit_breaker_config(&t.admin, &200, &0, &0);
+
+    let user_a = Address::generate(&t.env);
+    let user_b = Address::generate(&t.env);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token);
+    token_admin_client.mint(&user_a, &500);
+    token_admin_client.mint(&user_b, &500);
+
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&user_a, &pool_id, &0, &150);
+    t.client.place_bet(&user_b, &pool_id, &1, &60);
+}
+
+#[test]
+fn test_circuit_breaker_auto_cooling_freezes_then_unlocks() {
+    let t = setup();
+    t.client
+        .set_circuit_breaker_config(&t.admin, &0, &200, &120);
+
+    let user_a = Address::generate(&t.env);
+    let user_b = Address::generate(&t.env);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token);
+    token_admin_client.mint(&user_a, &500);
+    token_admin_client.mint(&user_b, &500);
+
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&user_a, &pool_id, &0, &150);
+    t.client.place_bet(&user_b, &pool_id, &1, &50);
+
+    let frozen_pool = t.client.get_pool(&pool_id).unwrap();
+    assert_eq!(frozen_pool.status, PoolStatus::Frozen);
+
+    t.env.ledger().with_mut(|li| li.timestamp += 121);
+    t.client.place_bet(&user_a, &pool_id, &0, &10);
+    let reopened_pool = t.client.get_pool(&pool_id).unwrap();
+    assert_eq!(reopened_pool.status, PoolStatus::Open);
+}
+
+#[test]
+fn test_circuit_breaker_admin_override_unfreezes_pool() {
+    let t = setup();
+    t.client
+        .set_circuit_breaker_config(&t.admin, &0, &200, &300);
+
+    let user_a = Address::generate(&t.env);
+    let user_b = Address::generate(&t.env);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token);
+    token_admin_client.mint(&user_a, &500);
+    token_admin_client.mint(&user_b, &500);
+
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&user_a, &pool_id, &0, &150);
+    t.client.place_bet(&user_b, &pool_id, &1, &50);
+    assert_eq!(t.client.get_pool(&pool_id).unwrap().status, PoolStatus::Frozen);
+
+    t.client.override_pool_cooling(&t.admin, &pool_id);
+    t.client.place_bet(&user_a, &pool_id, &0, &10);
+    assert_eq!(t.client.get_pool(&pool_id).unwrap().status, PoolStatus::Open);
+}

@@ -82,6 +82,14 @@ pub enum DataKey {
     ContractVersion,
     /// #176 — who triggered settlement for this pool (Creator or Operator).
     PoolSettlementSource(u32),
+    /// Maximum allowed total pool size. 0 disables the cap.
+    MaxPoolSize,
+    /// Threshold at/above which the pool enters automatic cooling. 0 disables.
+    LargePoolThreshold,
+    /// Cooling duration (seconds) applied when threshold is reached.
+    LargePoolCoolingPeriodSecs,
+    /// If present and in the future, pool is in mandatory cooling period.
+    PoolCoolingUntil(u32),
 }
 
 // #189 — TTL bump policy for persistent storage entries.
@@ -125,6 +133,12 @@ const MAX_OUTCOME_LENGTH: u32 = 50;
 const DEFAULT_MIN_BET_STROOPS: i128 = 0;
 /// Default per-pool maximum bet: 0 (no maximum).
 const DEFAULT_MAX_BET_STROOPS: i128 = 0;
+/// Default absolute cap for a pool total (A+B). 0 means "no cap".
+const DEFAULT_MAX_POOL_SIZE_STROOPS: i128 = 0;
+/// Default threshold for triggering automatic cooling. 0 means disabled.
+const DEFAULT_LARGE_POOL_THRESHOLD_STROOPS: i128 = 0;
+/// Default cooling duration for large pools.
+const DEFAULT_LARGE_POOL_COOLING_PERIOD_SECS: u64 = 0;
 
 /// #156 — Typed contract error model. Replaces string panics for all failure
 /// paths so SDK consumers can match on a stable error code rather than parsing
@@ -179,6 +193,10 @@ pub enum ContractError {
     BetBelowMinBet = 44,
     /// Bet amount is above the configured per-pool maximum.
     BetAboveMaxBet = 45,
+    /// Current pool size exceeds configured circuit-breaker maximum.
+    PoolSizeLimitExceeded = 46,
+    /// Cooling period setting is invalid for current threshold config.
+    InvalidCoolingPeriod = 47,
 }
 
 /// #176 — Settlement source tag indicating who initiated pool settlement.
@@ -249,6 +267,14 @@ pub struct Pool {
 pub struct PoolBetLimits {
     pub min_bet: i128,
     pub max_bet: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct CircuitBreakerConfig {
+    pub max_pool_size: i128,
+    pub large_pool_threshold: i128,
+    pub cooling_period_secs: u64,
 }
 
 /// Claim status for a user in a specific pool.
@@ -628,6 +654,75 @@ impl PredinexContract {
         Ok(())
     }
 
+    /// Configure pool circuit breaker for large pools.
+    ///
+    /// Only treasury recipient can modify this config.
+    /// - `max_pool_size` must be >= 0 (0 disables cap)
+    /// - `large_pool_threshold` must be >= 0 (0 disables auto-cooling)
+    /// - If threshold > 0 then `cooling_period_secs` must be > 0
+    /// - If both are set, `max_pool_size` must be 0 (disabled) or >= threshold
+    pub fn set_circuit_breaker_config(
+        env: Env,
+        caller: Address,
+        max_pool_size: i128,
+        large_pool_threshold: i128,
+        cooling_period_secs: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        let treasury_recipient: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryRecipient)
+            .ok_or(ContractError::NotInitialized)?;
+        if caller != treasury_recipient {
+            return Err(ContractError::Unauthorized);
+        }
+        if max_pool_size < 0 || large_pool_threshold < 0 {
+            return Err(ContractError::InvalidBetAmount);
+        }
+        if large_pool_threshold > 0 && cooling_period_secs == 0 {
+            return Err(ContractError::InvalidCoolingPeriod);
+        }
+        if max_pool_size > 0 && large_pool_threshold > 0 && max_pool_size < large_pool_threshold {
+            return Err(ContractError::InvalidBetAmount);
+        }
+
+        env.storage().persistent().set(&DataKey::MaxPoolSize, &max_pool_size);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LargePoolThreshold, &large_pool_threshold);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LargePoolCoolingPeriodSecs, &cooling_period_secs);
+
+        env.events().publish(
+            (Symbol::new(&env, "circuit_breaker_config_set"), event_version(&env)),
+            (max_pool_size, large_pool_threshold, cooling_period_secs),
+        );
+        Ok(())
+    }
+
+    /// Read current circuit breaker config.
+    pub fn get_circuit_breaker_config(env: Env) -> CircuitBreakerConfig {
+        CircuitBreakerConfig {
+            max_pool_size: env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::MaxPoolSize)
+                .unwrap_or(DEFAULT_MAX_POOL_SIZE_STROOPS),
+            large_pool_threshold: env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::LargePoolThreshold)
+                .unwrap_or(DEFAULT_LARGE_POOL_THRESHOLD_STROOPS),
+            cooling_period_secs: env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&DataKey::LargePoolCoolingPeriodSecs)
+                .unwrap_or(DEFAULT_LARGE_POOL_COOLING_PERIOD_SECS),
+        }
+    }
+
     /// #193 — Return the complete contract configuration in a single call.
     ///
     /// Provides all configuration values needed for frontend bootstrapping
@@ -869,6 +964,23 @@ impl PredinexContract {
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
 
+        if pool.status == PoolStatus::Frozen {
+            if let Some(cooling_until) = env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&DataKey::PoolCoolingUntil(pool_id))
+            {
+                if env.ledger().timestamp() >= cooling_until {
+                    pool.status = PoolStatus::Open;
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::PoolCoolingUntil(pool_id));
+                } else {
+                    return Err(ContractError::PoolIsFrozen);
+                }
+            }
+        }
+
         if pool.status != PoolStatus::Open {
             return Err(ContractError::PoolNotOpen);
         }
@@ -899,6 +1011,23 @@ impl PredinexContract {
         // max_bet == 0 => no maximum.
         if max_bet > 0 && amount > max_bet {
             return Err(ContractError::BetAboveMaxBet);
+        }
+
+        let current_total = pool
+            .total_a
+            .checked_add(pool.total_b)
+            .ok_or(ContractError::PoolTotalOverflow)?;
+        let new_total = current_total
+            .checked_add(amount)
+            .ok_or(ContractError::PoolTotalOverflow)?;
+
+        let max_pool_size: i128 = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::MaxPoolSize)
+            .unwrap_or(DEFAULT_MAX_POOL_SIZE_STROOPS);
+        if max_pool_size > 0 && new_total > max_pool_size {
+            return Err(ContractError::PoolSizeLimitExceeded);
         }
 
         let token_address = env
@@ -991,6 +1120,51 @@ impl PredinexContract {
                 total_no,
             },
         );
+
+        let large_pool_threshold: i128 = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::LargePoolThreshold)
+            .unwrap_or(DEFAULT_LARGE_POOL_THRESHOLD_STROOPS);
+        let cooling_period_secs: u64 = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::LargePoolCoolingPeriodSecs)
+            .unwrap_or(DEFAULT_LARGE_POOL_COOLING_PERIOD_SECS);
+        if large_pool_threshold > 0
+            && cooling_period_secs > 0
+            && new_total >= large_pool_threshold
+            && pool.status == PoolStatus::Open
+        {
+            let cooling_until = env
+                .ledger()
+                .timestamp()
+                .checked_add(cooling_period_secs)
+                .ok_or(ContractError::ExpiryOverflow)?;
+            pool.status = PoolStatus::Frozen;
+            env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Pool(pool_id),
+                POOL_BUMP_THRESHOLD,
+                POOL_BUMP_TARGET,
+            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::PoolCoolingUntil(pool_id), &cooling_until);
+            env.storage().persistent().extend_ttl(
+                &DataKey::PoolCoolingUntil(pool_id),
+                POOL_BUMP_THRESHOLD,
+                POOL_BUMP_TARGET,
+            );
+            env.events().publish(
+                (
+                    Symbol::new(&env, "pool_cooling_started"),
+                    event_version(&env),
+                    pool_id,
+                ),
+                (cooling_until, new_total),
+            );
+        }
         Ok(())
     }
 
@@ -1910,6 +2084,9 @@ impl PredinexContract {
         pool.status = PoolStatus::Open;
         env.storage()
             .persistent()
+            .remove(&DataKey::PoolCoolingUntil(pool_id));
+        env.storage()
+            .persistent()
             .set(&DataKey::Pool(pool_id), &pool);
         env.storage().persistent().extend_ttl(
             &DataKey::Pool(pool_id),
@@ -1920,6 +2097,53 @@ impl PredinexContract {
         env.events().publish(
             (
                 Symbol::new(&env, "pool_unfrozen"),
+                event_version(&env),
+                pool_id,
+            ),
+            caller,
+        );
+        Ok(())
+    }
+
+    /// Treasury admin override for automatic cooling locks.
+    pub fn override_pool_cooling(
+        env: Env,
+        caller: Address,
+        pool_id: u32,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        let treasury_recipient: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryRecipient)
+            .ok_or(ContractError::NotInitialized)?;
+        if caller != treasury_recipient {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let mut pool = env
+            .storage()
+            .persistent()
+            .get::<_, Pool>(&DataKey::Pool(pool_id))
+            .ok_or(ContractError::PoolNotFound)?;
+        if pool.status == PoolStatus::Frozen {
+            pool.status = PoolStatus::Open;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(pool_id), &pool);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Pool(pool_id),
+                POOL_BUMP_THRESHOLD,
+                POOL_BUMP_TARGET,
+            );
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PoolCoolingUntil(pool_id));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "pool_cooling_overridden"),
                 event_version(&env),
                 pool_id,
             ),
